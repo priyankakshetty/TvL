@@ -13,7 +13,7 @@ class Node:
         self.board = board
         self.parent = parent
         self.move = move  # (token, row, col)
-        self.player_turn = player_turn  # 'Thor' or 'Loki'
+        self.player_turn = player_turn  # 'Order' or 'Loki'
         self.children = []
         self.visits = 0
         self.wins = 0
@@ -21,23 +21,24 @@ class Node:
     def is_terminal(self):
         if self.move is None:
             return False
-        return self.board.is_full() or self.board.is_winning_move(*self.move)
+        return self.board.is_full() or self.board.is_winning_move(self.move[1], self.move[2], self.move[0])
 
     def expand(self):
         explored_moves = {(child.move, child.player_turn) for child in self.children}
-        legal_moves = self.board.get_legal_moves()
-        unexplored = [(token, row, col) for (row, col) in legal_moves for token in ['X', 'O']
-                      if ((token, row, col), self.player_turn) not in explored_moves]
+        candidate_moves = select_candidate_moves(self.board, self.player_turn)
+        unexplored = [move for move in candidate_moves if (move, self.player_turn) not in explored_moves]
 
-        new_nodes = []
-        for move in unexplored:
-            new_board = copy.deepcopy(self.board)
-            new_board.place_token(*move)
-            next_player = 'Thor' if self.player_turn == 'Loki' else 'Loki'
-            child_node = Node(new_board, self, move, next_player)
-            self.children.append(child_node)
-            new_nodes.append(child_node)
-        return new_nodes
+        if not unexplored:
+            return None
+
+        move = random.choice(unexplored)
+        new_board = copy.deepcopy(self.board)
+        new_board.place_token(*move)
+        next_turn = 'Order' if self.player_turn == 'Loki' else 'Loki'
+
+        child = Node(new_board, self, move, next_turn)
+        self.children.append(child)
+        return [child]
 
     def best_uct_child(self, c_param=1.4):
         best_score = -float('inf')
@@ -52,6 +53,7 @@ class Node:
                 best_score = score
                 best_child = child
         return best_child
+
 
 class MCTSPlayer(Player):
     def __init__(self, player_type, time_limit=1.0):
@@ -100,18 +102,13 @@ class MCTSPlayer(Player):
         temp_board = copy.deepcopy(node.board)
         current_player = node.player_turn
         while not temp_board.is_full():
-            legal_moves = temp_board.get_legal_moves()
-            if not legal_moves:
+            candidate_moves = select_candidate_moves(temp_board, current_player)
+            if not candidate_moves:
                 break
-            move = random.choice([
-                (token, row, col)
-                for (row, col) in legal_moves
-                for token in ['X', 'O']
-            ])
+            move = random.choice(candidate_moves)
             temp_board.place_token(*move)
-            if temp_board.is_winning_move(*move):
-                return 1 if (current_player == 'Thor' and move[0] == 'X') \
-                            or (current_player == 'Loki' and move[0] == 'O') else 0
+            if temp_board.is_winning_move(move[1], move[2], move[0]):
+                return 1 if (current_player == 'Thor' and move[0] == 'X') or (current_player == 'Loki' and move[0] == 'O') else 0
             current_player = 'Thor' if current_player == 'Loki' else 'Loki'
         return 0.5  # Draw
 
@@ -128,9 +125,47 @@ class MCTSPlayer(Player):
                 temp_board = copy.deepcopy(board)
                 temp_board.place_token(token, row, col)
                 if temp_board.is_winning_move(token, row, col):
-                    if player_type == 'Thor':
-                        return token, row, col
-                    else:
-                        opp_token = 'O' if token == 'X' else 'X'
-                        return opp_token, row, col
+                    if (player_type == 'Thor' and token == 'X') or (player_type == 'Loki' and token == 'O'):
+                        return (token, row, col)
+                    elif (player_type == 'Loki' and token == 'X') or (player_type == 'Thor' and token == 'O'):
+                        return (token, row, col)
         return None
+
+
+def line_potential(board, row, col, token):
+    directions = [(1, 0), (0, 1), (1, 1), (1, -1)]
+    max_line = 1
+    for dx, dy in directions:
+        count = 1
+        for dir in [1, -1]:
+            x, y = row, col
+            while 0 <= x + dx * dir < board.size and 0 <= y + dy * dir < board.size and board.grid[x + dx * dir][y + dy * dir] == token:
+                count += 1
+                x += dx * dir
+                y += dy * dir
+        max_line = max(max_line, count)
+    return max_line
+
+
+def disrupt_potential(board, row, col):
+    opponent_tokens = ['X', 'O']
+    max_threat = 1
+    for token in opponent_tokens:
+        threat = line_potential(board, row, col, token)
+        max_threat = max(max_threat, threat)
+    return max_threat
+
+
+def select_candidate_moves(board, player_type):
+    moves = board.get_legal_moves()
+    move_scores = []
+    for row, col in moves:
+        for token in ['X', 'O']:
+            if player_type == 'Thor':
+                score = line_potential(board, row, col, token)
+            else:
+                score = disrupt_potential(board, row, col)
+            move_scores.append(((token, row, col), score))
+
+    move_scores.sort(key=lambda x: x[1], reverse=True)
+    return [move for move, _ in move_scores[:5]]
